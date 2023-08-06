@@ -1,0 +1,315 @@
+esphome:
+  name: 'WebastoESPHome'
+  comment: 'WebastoESPHome'
+  includes:
+    - webasto.h
+
+esp32:
+  board: lolin32_lite
+
+logger:
+  #level: DEBUG
+  #level: WARN
+  level: ERROR
+  #baud_rate: 0 #disable logging over uart
+  
+wifi:
+  networks:
+    - ssid: 'SSID'
+      password: 'PASSWORD'
+  ap:
+    ssid: "WebastoESPHome"
+    password: "12345678"
+
+ota:
+
+#api:
+
+mqtt:
+  broker: 'BROKER'
+  username: 'USER'
+  password: 'PASSWORD'
+  id: mqtt_client
+  
+  
+web_server:
+  port: 80
+  version: 2
+  local: true
+  ota: false
+  js_include: "./v2-www.js"
+  js_url: ""
+
+  
+output:
+  - platform: gpio
+    pin: GPIO22
+    inverted: true
+    id: led
+
+uart:
+  id: uart_bus
+  tx_pin: 27
+  rx_pin: 26
+  baud_rate: 2400
+  parity: EVEN
+  stop_bits: 1
+
+custom_component:
+- lambda: |-
+    auto my_custom = new Webasto(id(uart_bus));
+    return {my_custom};
+  components:
+    - id: my_custom_id
+    
+interval:
+  - interval: 1s
+    then:
+      if:
+        condition:
+          mqtt.connected:
+        then:
+          - output.turn_on: led
+        else:
+          - output.turn_off: led
+  - interval: 6s
+    then:
+      - if:
+          condition:
+            - lambda: "return id(remain).state > 0;"
+          then:
+            - number.decrement:
+                id: remain
+                cycle: false
+      - if:
+          condition:
+            - lambda: "return id(remain).state < 0;"
+          then:
+            - number.set:
+                id: remain
+                value: 0
+            - switch.turn_off: sw_heat
+            - switch.turn_off: sw_vent
+            - climate.control:
+                id: my_thermostat
+                mode: 'OFF'
+    
+button:
+  - platform: restart
+    name: "Restart"
+    
+switch:
+  - platform: template
+    name: "Vent"
+    optimistic: true
+    id: sw_vent
+    on_turn_on:
+      - switch.turn_off: sw_heat
+      - lambda: "static_cast<Webasto*>(id(my_custom_id))->VentOn();"
+      - number.set:
+              id: remain
+              value: !lambda "return id(my_thermostat).mode>0 ? id(remain).state : id(runtime).state*60;"
+    on_turn_off:
+      - lambda: "static_cast<Webasto*>(id(my_custom_id))->Off();"
+      - number.set:
+              id: remain
+              value: !lambda "return id(my_thermostat).mode>0 ? id(remain).state : 0;"
+  - platform: template
+    name: "Heat"
+    optimistic: true
+    id: sw_heat
+    on_turn_on:
+      - switch.turn_off: sw_vent
+      - lambda: "static_cast<Webasto*>(id(my_custom_id))->HeatOn();"
+      - number.set:
+              id: remain
+              value: !lambda "return id(my_thermostat).mode>0 ? id(remain).state : id(runtime).state*60;"
+    on_turn_off:
+      - lambda: "static_cast<Webasto*>(id(my_custom_id))->Off();"
+      - number.set:
+              id: remain
+              value: !lambda "return id(my_thermostat).mode>0 ? id(remain).state : 0;"  
+   
+number:
+  - platform: template
+    name: "Remaining"
+    id: remain
+    initial_value: 0
+    step: 0.1
+    min_value: -0.5
+    max_value: 1440
+    unit_of_measurement: 'min'
+    mode: box
+    optimistic: true
+  - platform: template
+    name: "Runtime"
+    id: runtime
+    restore_value: true
+    step: 0.1
+    min_value: 0
+    max_value: 24
+    unit_of_measurement: 'h'
+    mode: box
+    optimistic: true
+
+  
+text_sensor:
+  - platform: wifi_info
+    ip_address:
+      name: ESP IP Address
+    ssid:
+      name: ESP Connected SSID
+    bssid:
+      name: ESP Connected BSSID
+    mac_address:
+      name: ESP Mac Wifi Address
+    scan_results:
+      name: ESP Latest Scan Results
+
+
+sensor:
+  - platform: wifi_signal
+    name: "WiFi Signal Sensor"
+  - platform: dht
+    pin: 14
+    temperature:
+      name: "Temperature"
+      id: temp
+      filters:
+        - median
+        - offset: -4.0
+    humidity:
+      name: "Humidity"
+      id: humi
+      filters:
+        - median
+    update_interval: 30s
+  - platform: absolute_humidity
+    name: "Absolute Humidity"
+    temperature: temp
+    humidity: humi
+    equation: Wobus
+    filters:
+      - median
+  - platform: template
+    name: "Working Hours"
+    lambda: "return static_cast<Webasto*>(id(my_custom_id))->state_50_06.working_hours;"
+    unit_of_measurement: "h"
+    accuracy_decimals: 2
+    update_interval: 30s
+  - platform: template
+    name: "Operating Hours"
+    lambda: "return static_cast<Webasto*>(id(my_custom_id))->state_50_06.operating_hours;"
+    unit_of_measurement: "h"
+    accuracy_decimals: 2
+    update_interval: 30s
+  - platform: template
+    name: "Start Counter"
+    lambda: "return static_cast<Webasto*>(id(my_custom_id))->state_50_06.start_counter;"
+    unit_of_measurement: "-"
+    accuracy_decimals: 0
+    update_interval: 30s
+  - platform: template
+    name: "Coolant temperature"
+    lambda: "return static_cast<Webasto*>(id(my_custom_id))->state_50_05.temperature;"
+    unit_of_measurement: "°C"
+    accuracy_decimals: 1
+    update_interval: 5s
+  - platform: template
+    name: "Voltage"
+    lambda: "return static_cast<Webasto*>(id(my_custom_id))->state_50_05.voltage;"
+    unit_of_measurement: "V"
+    accuracy_decimals: 1
+    update_interval: 5s
+  - platform: template
+    name: "Glowplug Resistance"
+    lambda: "return static_cast<Webasto*>(id(my_custom_id))->state_50_05.glowplug_resistance;"
+    unit_of_measurement: "Ω"
+    accuracy_decimals: 3
+    update_interval: 5s
+  - platform: template
+    name: "OP State"
+    lambda: "return static_cast<Webasto*>(id(my_custom_id))->state_50_07.op_state;"
+    unit_of_measurement: "-"
+    accuracy_decimals: 0
+    update_interval: 5s
+  - platform: template
+    name: "Glowplug"
+    lambda: "return static_cast<Webasto*>(id(my_custom_id))->state_50_04.glowplug;"
+    unit_of_measurement: "%"
+    accuracy_decimals: 0
+    update_interval: 5s
+  - platform: template
+    name: "Fuel Pump"
+    lambda: "return static_cast<Webasto*>(id(my_custom_id))->state_50_04.fuel_pump;"
+    unit_of_measurement: "Hz"
+    accuracy_decimals: 2
+    update_interval: 5s
+  - platform: template
+    name: "Combustion Fan"
+    lambda: "return static_cast<Webasto*>(id(my_custom_id))->state_50_04.combustion_fan;"
+    unit_of_measurement: "%"
+    accuracy_decimals: 0
+    update_interval: 5s
+
+
+binary_sensor:
+  - platform: template
+    name: "Heat Request"
+    lambda: "return static_cast<Webasto*>(id(my_custom_id))->state_50_03.heat_request;"
+  - platform: template
+    name: "Vent Request"
+    lambda: "return static_cast<Webasto*>(id(my_custom_id))->state_50_03.vent_request;"    
+  - platform: template
+    name: "Bit3"
+    lambda: "return static_cast<Webasto*>(id(my_custom_id))->state_50_03.bit3;"
+  - platform: template
+    name: "Bit4"
+    lambda: "return static_cast<Webasto*>(id(my_custom_id))->state_50_03.bit4;"
+  - platform: template
+    name: "Combustion Fan"
+    lambda: "return static_cast<Webasto*>(id(my_custom_id))->state_50_03.combustion_fan;"
+  - platform: template
+    name: "Glowplug"
+    lambda: "return static_cast<Webasto*>(id(my_custom_id))->state_50_03.glowplug;"
+  - platform: template
+    name: "Fuel Pump"
+    lambda: "return static_cast<Webasto*>(id(my_custom_id))->state_50_03.fuel_pump;"
+  - platform: template
+    name: "Nozzle Heating"
+    lambda: "return static_cast<Webasto*>(id(my_custom_id))->state_50_03.nozzle_heating;"
+
+                         
+climate:
+  - platform: thermostat
+    name: "Thermostat"
+    id: my_thermostat
+    on_boot_restore_from: memory
+    sensor: temp
+    visual:
+      min_temperature: 0
+      max_temperature: 40
+      temperature_step : 0.5
+    min_cooling_off_time: 30s
+    min_cooling_run_time: 30s
+    min_heating_off_time: 30s
+    min_heating_run_time: 30s
+    min_idle_time: 30s
+    cool_deadband: 0.5
+    cool_overrun: 0.5
+    heat_deadband: 0.5
+    heat_overrun: 0.5
+    set_point_minimum_differential: 3
+    cool_action:
+      - switch.turn_on: sw_vent
+    heat_action:
+      - switch.turn_on: sw_heat
+    idle_action:
+      - switch.turn_off: sw_vent
+      - switch.turn_off: sw_heat
+    on_control:
+      - delay: 1s
+      - number.set:
+          id: remain
+          value: !lambda "return id(my_thermostat).mode>0 ? id(runtime).state*60 : 0;"
+        
